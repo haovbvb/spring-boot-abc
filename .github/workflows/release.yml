@@ -154,7 +154,9 @@ jobs:
                   - --character-set-server=utf8mb4
                   - --collation-server=utf8mb4_unicode_ci
                 volumes:
-                  - ${ABC_DATA_ROOT:-/data/abc}/mysql:/var/lib/mysql
+                  - type: bind
+                    source: ${ABC_DATA_ROOT}/mysql
+                    target: /var/lib/mysql
                 healthcheck:
                   test:
                     [
@@ -178,7 +180,9 @@ jobs:
                   - --requirepass
                   - ${REDIS_PASSWORD:-AbcRedis_2026_Prod}
                 volumes:
-                  - ${ABC_DATA_ROOT:-/data/abc}/redis:/data
+                  - type: bind
+                    source: ${ABC_DATA_ROOT}/redis
+                    target: /data
                 healthcheck:
                   test:
                     [

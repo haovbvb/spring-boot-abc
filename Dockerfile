@@ -15,6 +15,8 @@ RUN useradd -r -u 1000 spring \
     && apt-get update && apt-get install -y --no-install-recommends wget \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app.jar /app/app.jar
+RUN mkdir -p /app/logs \
+    && chown -R spring:spring /app
 USER spring
 
 ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError \
