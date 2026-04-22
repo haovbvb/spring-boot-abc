@@ -5,6 +5,15 @@ on:
     branches: [main]
     tags: ["v*.*.*"]
   workflow_dispatch:
+    inputs:
+      service_name:
+        description: "Deploy service name (unique per backend service)"
+        required: false
+        default: "abc"
+      app_port:
+        description: "Host port exposed by app container"
+        required: false
+        default: "18080"
 
 env:
   REGISTRY: ghcr.io
@@ -13,8 +22,12 @@ env:
   DEPLOY_HOST_DEBUG: "8.163.10.211"
   DEPLOY_USER_DEBUG: "root"
   DEPLOY_PORT_DEBUG: "22"
+  DEPLOY_SERVICE_NAME_DEBUG: "abc"
+  DEPLOY_APP_PORT_DEBUG: "18080"
+  DEPLOY_ROOT_DEBUG: "/opt/services"
+  DEPLOY_DATA_ROOT_DEBUG: "/data/services"
   # JWT secret should be >= 32 chars for HMAC security. Debug only; use GitHub Secrets in production.
-  ABC_JWT_SECRET_DEBUG: "44f5b23a16c8bf050a688c2bbe7cbebe70b4c846859cf3d74beb473c4dce35e80a488d74c0ec62752ebb1956388de9e4"
+  ABC_JWT_SECRET_DEBUG: ${{ secrets.ABC_JWT_SECRET || 'AbcJwtSecret_2026_Prod_AtLeast_32Chars' }}
 
 jobs:
   build-and-push:
@@ -89,23 +102,125 @@ jobs:
           username: ${{ secrets.DEPLOY_USER || env.DEPLOY_USER_DEBUG }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || env.DEPLOY_PORT_DEBUG }}
-          envs: GHCR_USER,GHCR_TOKEN,IMAGE,ABC_JWT_SECRET,SPRING_PROFILES_ACTIVE
+          envs: GHCR_USER,GHCR_TOKEN,IMAGE,ABC_JWT_SECRET,SPRING_PROFILES_ACTIVE,SERVICE_NAME,APP_PORT,DEPLOY_ROOT,DEPLOY_DATA_ROOT,MYSQL_ROOT_PASSWORD,MYSQL_APP_PASSWORD,REDIS_PASSWORD
           script: |
             set -euo pipefail
+
+            APP_NAME="$SERVICE_NAME"
+            APP_HOME="$DEPLOY_ROOT/$APP_NAME"
+            DATA_ROOT="$DEPLOY_DATA_ROOT/$APP_NAME"
+
+            mkdir -p "$APP_HOME" "$DATA_ROOT/mysql" "$DATA_ROOT/redis"
+            chown -R 999:999 "$DATA_ROOT/mysql" "$DATA_ROOT/redis" || true
+
+            cat > "$APP_HOME/docker-compose.yml" <<'YAML'
+            services:
+              app:
+                image: ${IMAGE:-ghcr.io/your-org/spring-boot-abc:latest}
+                restart: always
+                depends_on:
+                  mysql:
+                    condition: service_healthy
+                  redis:
+                    condition: service_healthy
+                environment:
+                  SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+                  SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/abc?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+                  SPRING_DATASOURCE_USERNAME: abc
+                  SPRING_DATASOURCE_PASSWORD: ${MYSQL_APP_PASSWORD:-AbcApp_2026_Prod}
+                  SPRING_DATA_REDIS_HOST: redis
+                  SPRING_DATA_REDIS_PORT: "6379"
+                  SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-AbcRedis_2026_Prod}
+                  ABC_JWT_SECRET: ${ABC_JWT_SECRET:-AbcJwtSecret_2026_Prod_AtLeast_32Chars}
+                  TZ: Asia/Shanghai
+                ports:
+                  - "${APP_PORT:-18080}:8080"
+                healthcheck:
+                  test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+                  interval: 15s
+                  timeout: 5s
+                  retries: 10
+
+              mysql:
+                image: mysql:8.4
+                restart: always
+                environment:
+                  MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-AbcRoot_2026_Prod}
+                  MYSQL_DATABASE: abc
+                  MYSQL_USER: abc
+                  MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:-AbcApp_2026_Prod}
+                  TZ: Asia/Shanghai
+                command:
+                  - --character-set-server=utf8mb4
+                  - --collation-server=utf8mb4_unicode_ci
+                volumes:
+                  - ${ABC_DATA_ROOT:-/data/abc}/mysql:/var/lib/mysql
+                healthcheck:
+                  test:
+                    [
+                      "CMD",
+                      "mysqladmin",
+                      "ping",
+                      "-uroot",
+                      "-p${MYSQL_ROOT_PASSWORD:-AbcRoot_2026_Prod}",
+                    ]
+                  interval: 10s
+                  timeout: 5s
+                  retries: 10
+
+              redis:
+                image: redis:7-alpine
+                restart: always
+                command:
+                  - redis-server
+                  - --appendonly
+                  - yes
+                  - --requirepass
+                  - ${REDIS_PASSWORD:-AbcRedis_2026_Prod}
+                volumes:
+                  - ${ABC_DATA_ROOT:-/data/abc}/redis:/data
+                healthcheck:
+                  test:
+                    [
+                      "CMD",
+                      "redis-cli",
+                      "-a",
+                      "${REDIS_PASSWORD:-AbcRedis_2026_Prod}",
+                      "ping",
+                    ]
+                  interval: 10s
+                  timeout: 3s
+                  retries: 10
+            YAML
+
+            cat > "$APP_HOME/.env" <<EOF
+            SERVICE_NAME=$APP_NAME
+            COMPOSE_PROJECT_NAME=$APP_NAME
+            IMAGE=$IMAGE
+            APP_PORT=$APP_PORT
+            SPRING_PROFILES_ACTIVE=$SPRING_PROFILES_ACTIVE
+            ABC_DATA_ROOT=$DATA_ROOT
+            MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
+            MYSQL_APP_PASSWORD=$MYSQL_APP_PASSWORD
+            REDIS_PASSWORD=$REDIS_PASSWORD
+            ABC_JWT_SECRET=$ABC_JWT_SECRET
+            EOF
+
+            cd "$APP_HOME"
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-            docker pull "$IMAGE"
-            docker rm -f abc-app 2>/dev/null || true
-            docker run -d --name abc-app --restart=always \
-              --network abc-net \
-              -p 8080:8080 \
-              -e SPRING_PROFILES_ACTIVE="$SPRING_PROFILES_ACTIVE" \
-              -e ABC_JWT_SECRET="$ABC_JWT_SECRET" \
-              -e TZ=Asia/Shanghai \
-              "$IMAGE"
+            docker compose pull
+            docker compose up -d --remove-orphans
             docker image prune -f
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.version }}
+          SERVICE_NAME: ${{ github.event.inputs.service_name || vars.DEPLOY_SERVICE_NAME || env.DEPLOY_SERVICE_NAME_DEBUG }}
+          APP_PORT: ${{ github.event.inputs.app_port || vars.DEPLOY_APP_PORT || env.DEPLOY_APP_PORT_DEBUG }}
+          DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT || env.DEPLOY_ROOT_DEBUG }}
+          DEPLOY_DATA_ROOT: ${{ vars.DEPLOY_DATA_ROOT || env.DEPLOY_DATA_ROOT_DEBUG }}
+          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD || 'AbcRoot_2026_Prod' }}
+          MYSQL_APP_PASSWORD: ${{ secrets.MYSQL_APP_PASSWORD || 'AbcApp_2026_Prod' }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD || 'AbcRedis_2026_Prod' }}
           ABC_JWT_SECRET: ${{ secrets.ABC_JWT_SECRET || env.ABC_JWT_SECRET_DEBUG }}
-          SPRING_PROFILES_ACTIVE: prod
+          SPRING_PROFILES_ACTIVE: ${{ vars.SPRING_PROFILES_ACTIVE || 'prod' }}

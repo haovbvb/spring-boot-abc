@@ -15,7 +15,7 @@ public class SecurityProperties {
     private long jwtExpire = 7200;
     /** 放行路径 */
     private List<String> permitAll = new ArrayList<>(List.of(
-            "/auth/login", "/auth/logout",
+            "/auth/login", "/auth/register", "/auth/logout",
             "/actuator/**", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html",
             "/error"
     ));

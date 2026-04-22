@@ -35,7 +35,7 @@ docker run --rm -p 8080:8080 -e ABC_JWT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx 
 - **统一响应**：`R<T>{code,message,data,traceId,timestamp}`
 - **全局异常**：`BizException` + `GlobalExceptionHandler`
 - **TraceId**：`X-Trace-Id` 贯穿日志 MDC 与响应头
-- **鉴权**：`/auth/login` 签发 JWT；`@PreAuthorize` 支持 RBAC
+- **鉴权**：`/auth/register` 注册用户并返回 JWT，`/auth/login` 签发 JWT；`@PreAuthorize` 支持 RBAC
 - **限流**：`@RateLimit(limit=20, period=1, key="#id")`
 - **操作日志**：`@OperationLog(module="user", value="query")`
 - **审计字段**：继承 `BaseEntity` 自动填充 `createTime/updateTime/createBy/updateBy/deleted`
@@ -69,7 +69,8 @@ docker run --rm -p 8080:8080 -e ABC_JWT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx 
 - [deploy/docker-compose.dev.yml](deploy/docker-compose.dev.yml)：本地开发 MySQL 8.4 + Redis 7。
 - [deploy/docker-compose.prod.yml](deploy/docker-compose.prod.yml)：服务器端一键拉起 app + mysql + redis。
 - [deploy/.env.example](deploy/.env.example)：生产敏感变量模板。
-- [deploy/sql/mysql/01_init_abc.sql](deploy/sql/mysql/01_init_abc.sql)：本地 MySQL 初始化脚本（建表 + demo 数据）。
+- [abc-application/src/main/resources/db/migration/common/V1\_\_init_schema.sql](abc-application/src/main/resources/db/migration/common/V1__init_schema.sql)：通用 schema 迁移。
+- [abc-application/src/main/resources/db/migration/dev/R\_\_seed_demo_user.sql](abc-application/src/main/resources/db/migration/dev/R__seed_demo_user.sql)：dev 示例数据迁移。
 
 ### 本地开发（推荐：应用本机跑 + 中间件 Docker）
 
@@ -85,13 +86,15 @@ mvn -pl abc-application -am spring-boot:run
 
 说明：
 
-- `deploy/sql/mysql/01_init_abc.sql` 会在 **MySQL 数据卷为空时** 自动执行。
+- 应用启动时由 Flyway 自动执行数据库迁移（dev / prod 路径统一）。
+- 首次迁移会创建 `flyway_schema_history` 表并应用 `db/migration` 中的脚本。
 - 若你已存在旧数据，想重新初始化，可执行：
 
 ```bash
 docker compose -f deploy/docker-compose.dev.yml down
 docker volume rm deploy_abc-mysql
 docker compose -f deploy/docker-compose.dev.yml up -d
+mvn -pl abc-application -am spring-boot:run
 ```
 
 ### 本地端到端自测
@@ -100,11 +103,12 @@ docker compose -f deploy/docker-compose.dev.yml up -d
 # 1) 健康检查
 curl -s http://localhost:8080/actuator/health
 
-# 2) 登录拿 token
-LOGIN_JSON=$(curl -s -X POST http://localhost:8080/auth/login \
+# 2) 注册并拿 token
+REG_USER="demo_$(date +%s)"
+REGISTER_JSON=$(curl -s -X POST http://localhost:8080/auth/register \
 	-H 'Content-Type: application/json' \
-	-d '{"username":"demo","password":"demo"}')
-TOKEN=$(echo "$LOGIN_JSON" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+	-d "{\"username\":\"$REG_USER\",\"password\":\"demo123\",\"nickname\":\"Demo User\"}")
+TOKEN=$(echo "$REGISTER_JSON" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 
 # 3) 调鉴权接口
 curl -s http://localhost:8080/users/1 -H "Authorization: Bearer $TOKEN"
@@ -115,23 +119,30 @@ curl -s http://localhost:8080/users/1 -H "Authorization: Bearer $TOKEN"
 - 开发环境：在 [abc-application/src/main/resources/application-dev.yml](abc-application/src/main/resources/application-dev.yml) 中排除 `RedissonAutoConfigurationV2`，避免本地 Redis 无密码时触发 AUTH 报错。
 - 生产环境：在 [deploy/docker-compose.prod.yml](deploy/docker-compose.prod.yml) 中启用 Redis 密码（`REDIS_PASSWORD`），并通过 `SPRING_DATA_REDIS_PASSWORD` 注入应用，支持 Redisson 正常连接。
 
+### Flyway 迁移策略
+
+- 通用迁移放在 `db/migration/common`，dev 与 prod 都会执行。
+- dev 专属迁移放在 `db/migration/dev`，仅 dev profile 执行（例如 demo 数据）。
+- 新增结构变更时，请追加新的 `V{version}__*.sql`，不要改历史版本脚本。
+
 ### 服务器首次准备
 
 ```bash
 # 1. 服务器登录并安装 docker / docker compose
-# 2. 创建独立网络（release.yml 中使用）
-docker network create abc-net || true
-
-# 3. 生成 SSH 部署密钥（本地执行，公钥写入服务器 ~/.ssh/authorized_keys）
+# 2. 生成 SSH 部署密钥（本地执行，公钥写入服务器 ~/.ssh/authorized_keys）
 ssh-keygen -t ed25519 -C deploy -f ./deploy_key
 
-# 4. 在 GitHub 仓库 Settings → Secrets and variables → Actions 配置：
+# 3. 在 GitHub 仓库 Settings → Secrets and variables → Actions 配置：
 #    DEPLOY_HOST     服务器 IP/域名
 #    DEPLOY_USER     部署用户名
 #    DEPLOY_PORT     SSH 端口（如 22）
 #    DEPLOY_SSH_KEY  deploy_key 的私钥全文
-#    ABC_JWT_SECRET  JWT 密钥（>=32 字节）
-#    REDIS_PASSWORD  Redis 密码（生产环境必填）
+#    MYSQL_ROOT_PASSWORD / MYSQL_APP_PASSWORD / REDIS_PASSWORD / ABC_JWT_SECRET
+#                    以上可配为 Secrets（不配则使用 compose 默认值）
+#    DEPLOY_SERVICE_NAME（Repository Variable，可选）例如 abc-user / abc-order
+#    DEPLOY_APP_PORT（Repository Variable，可选）例如 18080 / 18081
+#    DEPLOY_ROOT（Repository Variable，可选）默认 /opt/services
+#    DEPLOY_DATA_ROOT（Repository Variable，可选）默认 /data/services
 #    在 Settings → Environments 新建 "production"，可加保护规则。
 ```
 
@@ -147,15 +158,29 @@ git tag v1.0.0 && git push origin v1.0.0
 
 镜像地址形如：`ghcr.io/<org>/<repo>:1.0.0`。GHCR 默认为私有，需 `docker login ghcr.io` 后拉取。
 
-### 服务器通过 compose 运行（可选替代 release.yml 里的 docker run）
+### 服务器通过 compose 手动运行（与 release.yml 同构）
 
 ```bash
 cd /opt/abc
 cp deploy/.env.example .env && vim .env
+# 显式宿主机数据目录（可在 .env 中调整 ABC_DATA_ROOT）
+mkdir -p /data/services/abc/mysql /data/services/abc/redis
+# 确保 docker 有权限写入目录
+chown -R 999:999 /data/services/abc/mysql /data/services/abc/redis
+# 不改 .env 也可直接运行（compose 内置了同款默认值）
 # 将 prod compose 中 image 改为你自己的 GHCR 镜像
 docker compose -f deploy/docker-compose.prod.yml pull
 docker compose -f deploy/docker-compose.prod.yml up -d
 ```
+
+自动发布说明：
+
+`release.yml` 现在会在服务器自动创建目录并生成每个服务独立的部署目录与 `.env`。
+
+- 部署目录：`${DEPLOY_ROOT}/${SERVICE_NAME}`（默认 `/opt/services/<service>`）
+- 数据目录：`${DEPLOY_DATA_ROOT}/${SERVICE_NAME}/mysql|redis`（默认 `/data/services/<service>/...`）
+- 同一台服务器部署多个后端时，只需保证 `SERVICE_NAME` 和 `APP_PORT` 不同。
+- 手动触发 `workflow_dispatch` 时可以直接填写 `service_name` 与 `app_port` 覆盖默认值。
 
 ### 常见坑位
 
@@ -163,5 +188,5 @@ docker compose -f deploy/docker-compose.prod.yml up -d
 - 镜像默认私有，仓库 → Packages → 镜像设置里改可见性或设置 pull secret。
 - 多架构构建较慢，仅生产 tag 发布时启用 `linux/arm64` 可降低日常 CI 时间。
 - 服务器防火墙只放开 80/443，8080 走内网或反向代理（Nginx/Caddy）。
-- dev 环境 MySQL 初始化脚本只在 **首次建卷** 时执行；已有卷不会重复执行。
+- Flyway 在应用启动阶段执行；MySQL 仅启动完成并不代表迁移已完成。
 - 若本地 Redis 不设密码且启用 Redisson 自动装配，可能出现 `ERR AUTH`，请保持 dev 环境的 Redisson 排除配置。

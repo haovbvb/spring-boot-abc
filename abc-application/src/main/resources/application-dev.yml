@@ -9,6 +9,8 @@ spring:
       connection-timeout: 30000
       idle-timeout: 600000
       max-lifetime: 1800000
+  flyway:
+    locations: classpath:db/migration/common,classpath:db/migration/dev
   autoconfigure:
     exclude:
       - org.redisson.spring.starter.RedissonAutoConfigurationV2

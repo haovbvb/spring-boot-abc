@@ -1,7 +1,6 @@
 services:
   app:
-    image: ghcr.io/your-org/spring-boot-abc:latest
-    container_name: abc-app
+    image: ${IMAGE:-ghcr.io/your-org/spring-boot-abc:latest}
     restart: always
     depends_on:
       mysql:
@@ -9,17 +8,17 @@ services:
       redis:
         condition: service_healthy
     environment:
-      SPRING_PROFILES_ACTIVE: prod
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/abc?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
       SPRING_DATASOURCE_USERNAME: abc
-      SPRING_DATASOURCE_PASSWORD: ${MYSQL_APP_PASSWORD}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_APP_PASSWORD:-AbcApp_2026_Prod}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: "6379"
-      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
-      ABC_JWT_SECRET: ${ABC_JWT_SECRET}
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-AbcRedis_2026_Prod}
+      ABC_JWT_SECRET: ${ABC_JWT_SECRET:-AbcJwtSecret_2026_Prod_AtLeast_32Chars}
       TZ: Asia/Shanghai
     ports:
-      - "8080:8080"
+      - "${APP_PORT:-18080}:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
       interval: 15s
@@ -30,18 +29,25 @@ services:
     image: mysql:8.4
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-AbcRoot_2026_Prod}
       MYSQL_DATABASE: abc
       MYSQL_USER: abc
-      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD}
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:-AbcApp_2026_Prod}
       TZ: Asia/Shanghai
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     volumes:
-      - abc-mysql:/var/lib/mysql
+      - ${ABC_DATA_ROOT:-/data/abc}/mysql:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-uroot",
+          "-p${MYSQL_ROOT_PASSWORD:-AbcRoot_2026_Prod}",
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -54,15 +60,18 @@ services:
       - --appendonly
       - yes
       - --requirepass
-      - ${REDIS_PASSWORD}
+      - ${REDIS_PASSWORD:-AbcRedis_2026_Prod}
     volumes:
-      - abc-redis:/data
+      - ${ABC_DATA_ROOT:-/data/abc}/redis:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "-a",
+          "${REDIS_PASSWORD:-AbcRedis_2026_Prod}",
+          "ping",
+        ]
       interval: 10s
       timeout: 3s
       retries: 10
-
-volumes:
-  abc-mysql:
-  abc-redis:
