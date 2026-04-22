@@ -102,9 +102,27 @@ jobs:
           username: ${{ secrets.DEPLOY_USER || env.DEPLOY_USER_DEBUG }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || env.DEPLOY_PORT_DEBUG }}
+          timeout: 300s
+          command_timeout: 40m
           envs: GHCR_USER,GHCR_TOKEN,IMAGE,ABC_JWT_SECRET,SPRING_PROFILES_ACTIVE,SERVICE_NAME,APP_PORT,DEPLOY_ROOT,DEPLOY_DATA_ROOT,MYSQL_ROOT_PASSWORD,MYSQL_APP_PASSWORD,REDIS_PASSWORD
           script: |
             set -euo pipefail
+
+            retry() {
+              local max=3
+              local attempt=1
+              while true; do
+                if "$@"; then
+                  return 0
+                fi
+                if [ "$attempt" -ge "$max" ]; then
+                  return 1
+                fi
+                attempt=$((attempt + 1))
+                echo "command failed, retrying ($attempt/$max): $*"
+                sleep 5
+              done
+            }
 
             APP_NAME="$SERVICE_NAME"
             APP_HOME="$DEPLOY_ROOT/$APP_NAME"
@@ -212,8 +230,8 @@ jobs:
 
             cd "$APP_HOME"
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-            docker compose pull
-            docker compose up -d --remove-orphans
+            retry docker compose pull app
+            retry docker compose up -d --remove-orphans
             docker image prune -f
         env:
           GHCR_USER: ${{ github.actor }}
