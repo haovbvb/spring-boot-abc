@@ -100,8 +100,14 @@ mvn -pl abc-application -am spring-boot:run
 ### 本地端到端自测
 
 ```bash
-# 1) 健康检查
+# 1) 健康检查（基础）
 curl -s http://localhost:8080/actuator/health
+
+# 1.1) 健康检查（部署版本）
+curl -s http://localhost:8080/actuator/health/deploy
+
+# 1.2) 仅提取当前部署版本（APP_VERSION）
+curl -s http://localhost:8080/actuator/health/deploy | sed -n 's/.*"version":"\([^"]*\)".*/\1/p'
 
 # 2) 注册并拿 token
 REG_USER="demo_$(date +%s)"
@@ -140,7 +146,6 @@ ssh-keygen -t ed25519 -C deploy -f ./deploy_key
 #    MYSQL_ROOT_PASSWORD / MYSQL_APP_PASSWORD / REDIS_PASSWORD / ABC_JWT_SECRET
 #                    以上可配为 Secrets（不配则使用 compose 默认值）
 #    DEPLOY_SERVICE_NAME（Repository Variable，可选）例如 abc-user / abc-order
-#    DEPLOY_APP_PORT（Repository Variable，可选）例如 18080 / 18081
 #    DEPLOY_ROOT（Repository Variable，可选）默认 /opt/services
 #    DEPLOY_DATA_ROOT（Repository Variable，可选）默认 /data/services
 #    在 Settings → Environments 新建 "production"，可加保护规则。
@@ -164,9 +169,10 @@ git tag v1.0.0 && git push origin v1.0.0
 cd /opt/abc
 cp deploy/.env.example .env && vim .env
 # 显式宿主机数据目录（可在 .env 中调整 ABC_DATA_ROOT）
-mkdir -p /data/services/abc/mysql /data/services/abc/redis
+mkdir -p /data/services/abc/mysql /data/services/abc/redis /data/services/abc/app-logs
 # 确保 docker 有权限写入目录
 chown -R 999:999 /data/services/abc/mysql /data/services/abc/redis
+chown -R 1000:1000 /data/services/abc/app-logs
 # 不改 .env 也可直接运行（compose 内置了同款默认值）
 # 将 prod compose 中 image 改为你自己的 GHCR 镜像
 docker compose -f deploy/docker-compose.prod.yml pull
@@ -175,12 +181,13 @@ docker compose -f deploy/docker-compose.prod.yml up -d
 
 自动发布说明：
 
-`release.yml` 现在会在服务器自动创建目录并生成每个服务独立的部署目录与 `.env`。
+`release.yml` 现在会在服务器自动创建目录，上传仓库中的固定 `deploy/docker-compose.prod.yml`，并按环境变量动态生成 `.env`。
 
 - 部署目录：`${DEPLOY_ROOT}/${SERVICE_NAME}`（默认 `/opt/services/<service>`）
-- 数据目录：`${DEPLOY_DATA_ROOT}/${SERVICE_NAME}/mysql|redis`（默认 `/data/services/<service>/...`）
-- 同一台服务器部署多个后端时，只需保证 `SERVICE_NAME` 和 `APP_PORT` 不同。
-- 手动触发 `workflow_dispatch` 时可以直接填写 `service_name` 与 `app_port` 覆盖默认值。
+- 数据目录：`${DEPLOY_DATA_ROOT}/${SERVICE_NAME}/mysql|redis|app-logs`（默认 `/data/services/<service>/...`）
+- 应用对外端口统一固定为 `18080`。
+- 手动触发 `workflow_dispatch` 时可填写 `service_name`，端口不再作为输入项。
+- 发布后可通过 `/actuator/health/deploy` 查看 `version`（git sha）、`image`、`buildVersion` 等字段，判断是否为最新版本。
 
 ### 常见坑位
 

@@ -15,10 +15,16 @@ services:
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: "6379"
       SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-AbcRedis_2026_Prod}
+      APP_VERSION: ${APP_VERSION:-unknown}
+      APP_IMAGE: ${APP_IMAGE:-unknown}
       ABC_JWT_SECRET: ${ABC_JWT_SECRET:-AbcJwtSecret_2026_Prod_AtLeast_32Chars}
       TZ: Asia/Shanghai
     ports:
-      - "${APP_PORT:-18080}:8080"
+      - "18080:8080"
+    volumes:
+      - type: bind
+        source: ${ABC_DATA_ROOT}/app-logs
+        target: /app/logs
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
       interval: 15s
@@ -37,10 +43,10 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
-    # 生产数据目录：如需自定义请改下方 source，或直接使用 .github/workflows/release.yml 自动生成的 compose
+    # 生产数据目录由 ABC_DATA_ROOT 控制，建议形如 /data/services/<service>
     volumes:
       - type: bind
-        source: /data/abc/mysql
+        source: ${ABC_DATA_ROOT}/mysql
         target: /var/lib/mysql
     healthcheck:
       test:
@@ -66,7 +72,7 @@ services:
       - ${REDIS_PASSWORD:-AbcRedis_2026_Prod}
     volumes:
       - type: bind
-        source: /data/abc/redis
+        source: ${ABC_DATA_ROOT}/redis
         target: /data
     healthcheck:
       test:

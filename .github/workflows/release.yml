@@ -10,10 +10,6 @@ on:
         description: "Deploy service name (unique per backend service)"
         required: false
         default: "abc"
-      app_port:
-        description: "Host port exposed by app container"
-        required: false
-        default: "18080"
 
 env:
   REGISTRY: ghcr.io
@@ -23,7 +19,6 @@ env:
   DEPLOY_USER_DEBUG: "root"
   DEPLOY_PORT_DEBUG: "22"
   DEPLOY_SERVICE_NAME_DEBUG: "abc"
-  DEPLOY_APP_PORT_DEBUG: "18080"
   DEPLOY_ROOT_DEBUG: "/opt/services"
   DEPLOY_DATA_ROOT_DEBUG: "/data/services"
   # JWT secret should be >= 32 chars for HMAC security. Debug only; use GitHub Secrets in production.
@@ -76,7 +71,21 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
 
-      - name: Build & push
+      - name: Build & push (main)
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push (tag)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -94,7 +103,53 @@ jobs:
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: production
+    env:
+      GHCR_USER: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE: ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.version }}
+      APP_VERSION: ${{ github.sha }}
+      SERVICE_NAME: ${{ github.event.inputs.service_name || vars.DEPLOY_SERVICE_NAME || env.DEPLOY_SERVICE_NAME_DEBUG }}
+      DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT || env.DEPLOY_ROOT_DEBUG }}
+      DEPLOY_DATA_ROOT: ${{ vars.DEPLOY_DATA_ROOT || env.DEPLOY_DATA_ROOT_DEBUG }}
+      MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD || 'AbcRoot_2026_Prod' }}
+      MYSQL_APP_PASSWORD: ${{ secrets.MYSQL_APP_PASSWORD || 'AbcApp_2026_Prod' }}
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD || 'AbcRedis_2026_Prod' }}
+      ABC_JWT_SECRET: ${{ secrets.ABC_JWT_SECRET || env.ABC_JWT_SECRET_DEBUG }}
+      SPRING_PROFILES_ACTIVE: ${{ vars.SPRING_PROFILES_ACTIVE || 'prod' }}
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare remote directories
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST || env.DEPLOY_HOST_DEBUG }}
+          username: ${{ secrets.DEPLOY_USER || env.DEPLOY_USER_DEBUG }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || env.DEPLOY_PORT_DEBUG }}
+          timeout: 60s
+          command_timeout: 5m
+          envs: SERVICE_NAME,DEPLOY_ROOT,DEPLOY_DATA_ROOT
+          script: |
+            set -euo pipefail
+
+            APP_HOME="$DEPLOY_ROOT/$SERVICE_NAME"
+            DATA_ROOT="$DEPLOY_DATA_ROOT/$SERVICE_NAME"
+
+            mkdir -p "$APP_HOME" "$DATA_ROOT/mysql" "$DATA_ROOT/redis" "$DATA_ROOT/app-logs"
+            chown -R 999:999 "$DATA_ROOT/mysql" "$DATA_ROOT/redis" || true
+            chown -R 1000:1000 "$DATA_ROOT/app-logs" || true
+
+      - name: Upload compose template
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST || env.DEPLOY_HOST_DEBUG }}
+          username: ${{ secrets.DEPLOY_USER || env.DEPLOY_USER_DEBUG }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || env.DEPLOY_PORT_DEBUG }}
+          source: deploy/docker-compose.prod.yml
+          target: ${{ env.DEPLOY_ROOT }}/${{ env.SERVICE_NAME }}/
+          strip_components: 1
+
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -104,7 +159,7 @@ jobs:
           port: ${{ secrets.DEPLOY_PORT || env.DEPLOY_PORT_DEBUG }}
           timeout: 300s
           command_timeout: 40m
-          envs: GHCR_USER,GHCR_TOKEN,IMAGE,ABC_JWT_SECRET,SPRING_PROFILES_ACTIVE,SERVICE_NAME,APP_PORT,DEPLOY_ROOT,DEPLOY_DATA_ROOT,MYSQL_ROOT_PASSWORD,MYSQL_APP_PASSWORD,REDIS_PASSWORD
+          envs: GHCR_USER,GHCR_TOKEN,IMAGE,APP_VERSION,ABC_JWT_SECRET,SPRING_PROFILES_ACTIVE,SERVICE_NAME,DEPLOY_ROOT,DEPLOY_DATA_ROOT,MYSQL_ROOT_PASSWORD,MYSQL_APP_PASSWORD,REDIS_PASSWORD
           script: |
             set -euo pipefail
 
@@ -124,102 +179,54 @@ jobs:
               done
             }
 
-            APP_NAME="$SERVICE_NAME"
-            APP_HOME="$DEPLOY_ROOT/$APP_NAME"
-            DATA_ROOT="$DEPLOY_DATA_ROOT/$APP_NAME"
+            wait_for_health() {
+              local url="http://127.0.0.1:18080/actuator/health/deploy"
+              local attempts=24
+              local i=1
+              while [ "$i" -le "$attempts" ]; do
+                if command -v curl >/dev/null 2>&1; then
+                  if curl -fsS --max-time 3 "$url" >/dev/null; then
+                    return 0
+                  fi
+                else
+                  if wget -qO- --timeout=3 "$url" >/dev/null; then
+                    return 0
+                  fi
+                fi
+                echo "waiting for health (${i}/${attempts}): $url"
+                sleep 5
+                i=$((i + 1))
+              done
+              return 1
+            }
 
-            mkdir -p "$APP_HOME" "$DATA_ROOT/mysql" "$DATA_ROOT/redis"
-            chown -R 999:999 "$DATA_ROOT/mysql" "$DATA_ROOT/redis" || true
+            set_env_value() {
+              local key="$1"
+              local value="$2"
+              if grep -q "^${key}=" "$APP_HOME/.env"; then
+                sed -i "s|^${key}=.*|${key}=${value}|" "$APP_HOME/.env"
+              else
+                echo "${key}=${value}" >> "$APP_HOME/.env"
+              fi
+            }
 
-            cat > "$APP_HOME/docker-compose.yml" <<'YAML'
-            services:
-              app:
-                image: ${IMAGE:-ghcr.io/your-org/spring-boot-abc:latest}
-                restart: always
-                depends_on:
-                  mysql:
-                    condition: service_healthy
-                  redis:
-                    condition: service_healthy
-                environment:
-                  SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
-                  SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/abc?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-                  SPRING_DATASOURCE_USERNAME: abc
-                  SPRING_DATASOURCE_PASSWORD: ${MYSQL_APP_PASSWORD:-AbcApp_2026_Prod}
-                  SPRING_DATA_REDIS_HOST: redis
-                  SPRING_DATA_REDIS_PORT: "6379"
-                  SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-AbcRedis_2026_Prod}
-                  ABC_JWT_SECRET: ${ABC_JWT_SECRET:-AbcJwtSecret_2026_Prod_AtLeast_32Chars}
-                  TZ: Asia/Shanghai
-                ports:
-                  - "${APP_PORT:-18080}:8080"
-                healthcheck:
-                  test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
-                  interval: 15s
-                  timeout: 5s
-                  retries: 10
+            APP_HOME="$DEPLOY_ROOT/$SERVICE_NAME"
+            DATA_ROOT="$DEPLOY_DATA_ROOT/$SERVICE_NAME"
+            COMPOSE_FILE="$APP_HOME/docker-compose.prod.yml"
 
-              mysql:
-                image: mysql:8.4
-                restart: always
-                environment:
-                  MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-AbcRoot_2026_Prod}
-                  MYSQL_DATABASE: abc
-                  MYSQL_USER: abc
-                  MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:-AbcApp_2026_Prod}
-                  TZ: Asia/Shanghai
-                command:
-                  - --character-set-server=utf8mb4
-                  - --collation-server=utf8mb4_unicode_ci
-                volumes:
-                  - type: bind
-                    source: ${ABC_DATA_ROOT}/mysql
-                    target: /var/lib/mysql
-                healthcheck:
-                  test:
-                    [
-                      "CMD",
-                      "mysqladmin",
-                      "ping",
-                      "-uroot",
-                      "-p${MYSQL_ROOT_PASSWORD:-AbcRoot_2026_Prod}",
-                    ]
-                  interval: 10s
-                  timeout: 5s
-                  retries: 10
+            if [ ! -f "$COMPOSE_FILE" ]; then
+              echo "compose file not found: $COMPOSE_FILE"
+              exit 1
+            fi
 
-              redis:
-                image: redis:7-alpine
-                restart: always
-                command:
-                  - redis-server
-                  - --appendonly
-                  - yes
-                  - --requirepass
-                  - ${REDIS_PASSWORD:-AbcRedis_2026_Prod}
-                volumes:
-                  - type: bind
-                    source: ${ABC_DATA_ROOT}/redis
-                    target: /data
-                healthcheck:
-                  test:
-                    [
-                      "CMD",
-                      "redis-cli",
-                      "-a",
-                      "${REDIS_PASSWORD:-AbcRedis_2026_Prod}",
-                      "ping",
-                    ]
-                  interval: 10s
-                  timeout: 3s
-                  retries: 10
-            YAML
+            PREV_IMAGE="$(docker inspect --format='{{.Config.Image}}' "${SERVICE_NAME}-app-1" 2>/dev/null || true)"
 
             cat > "$APP_HOME/.env" <<EOF
-            SERVICE_NAME=$APP_NAME
-            COMPOSE_PROJECT_NAME=$APP_NAME
+            SERVICE_NAME=$SERVICE_NAME
+            COMPOSE_PROJECT_NAME=$SERVICE_NAME
             IMAGE=$IMAGE
-            APP_PORT=$APP_PORT
+            APP_VERSION=$APP_VERSION
+            APP_IMAGE=$IMAGE
             SPRING_PROFILES_ACTIVE=$SPRING_PROFILES_ACTIVE
             ABC_DATA_ROOT=$DATA_ROOT
             MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
@@ -227,22 +234,31 @@ jobs:
             REDIS_PASSWORD=$REDIS_PASSWORD
             ABC_JWT_SECRET=$ABC_JWT_SECRET
             EOF
+            chmod 600 "$APP_HOME/.env"
 
             cd "$APP_HOME"
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-            retry docker compose pull app
-            retry docker compose up -d --remove-orphans
+            retry docker compose --env-file .env -f "$COMPOSE_FILE" pull app
+            retry docker compose --env-file .env -f "$COMPOSE_FILE" up -d --remove-orphans
+
+            if ! wait_for_health; then
+              echo "deployment health check failed"
+              docker compose --env-file .env -f "$COMPOSE_FILE" logs --tail=200 app || true
+
+              if [ -n "$PREV_IMAGE" ]; then
+                echo "rolling back to previous image: $PREV_IMAGE"
+                set_env_value IMAGE "$PREV_IMAGE"
+                retry docker compose --env-file .env -f "$COMPOSE_FILE" up -d --remove-orphans
+
+                if ! wait_for_health; then
+                  echo "rollback health check failed"
+                  docker compose --env-file .env -f "$COMPOSE_FILE" logs --tail=200 app || true
+                  exit 1
+                fi
+              else
+                echo "no previous image found, rollback skipped"
+                exit 1
+              fi
+            fi
+
             docker image prune -f
-        env:
-          GHCR_USER: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IMAGE: ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.version }}
-          SERVICE_NAME: ${{ github.event.inputs.service_name || vars.DEPLOY_SERVICE_NAME || env.DEPLOY_SERVICE_NAME_DEBUG }}
-          APP_PORT: ${{ github.event.inputs.app_port || vars.DEPLOY_APP_PORT || env.DEPLOY_APP_PORT_DEBUG }}
-          DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT || env.DEPLOY_ROOT_DEBUG }}
-          DEPLOY_DATA_ROOT: ${{ vars.DEPLOY_DATA_ROOT || env.DEPLOY_DATA_ROOT_DEBUG }}
-          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD || 'AbcRoot_2026_Prod' }}
-          MYSQL_APP_PASSWORD: ${{ secrets.MYSQL_APP_PASSWORD || 'AbcApp_2026_Prod' }}
-          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD || 'AbcRedis_2026_Prod' }}
-          ABC_JWT_SECRET: ${{ secrets.ABC_JWT_SECRET || env.ABC_JWT_SECRET_DEBUG }}
-          SPRING_PROFILES_ACTIVE: ${{ vars.SPRING_PROFILES_ACTIVE || 'prod' }}
