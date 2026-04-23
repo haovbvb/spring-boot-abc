@@ -108,13 +108,13 @@ jobs:
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       IMAGE: ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.version }}
       APP_VERSION: ${{ github.sha }}
-      SERVICE_NAME: ${{ github.event.inputs.service_name || vars.DEPLOY_SERVICE_NAME || env.DEPLOY_SERVICE_NAME_DEBUG }}
-      DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT || env.DEPLOY_ROOT_DEBUG }}
-      DEPLOY_DATA_ROOT: ${{ vars.DEPLOY_DATA_ROOT || env.DEPLOY_DATA_ROOT_DEBUG }}
+      SERVICE_NAME: ${{ github.event.inputs.service_name || vars.DEPLOY_SERVICE_NAME || 'abc' }}
+      DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT || '/opt/services' }}
+      DEPLOY_DATA_ROOT: ${{ vars.DEPLOY_DATA_ROOT || '/data/services' }}
       MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD || 'AbcRoot_2026_Prod' }}
       MYSQL_APP_PASSWORD: ${{ secrets.MYSQL_APP_PASSWORD || 'AbcApp_2026_Prod' }}
       REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD || 'AbcRedis_2026_Prod' }}
-      ABC_JWT_SECRET: ${{ secrets.ABC_JWT_SECRET || env.ABC_JWT_SECRET_DEBUG }}
+      ABC_JWT_SECRET: ${{ secrets.ABC_JWT_SECRET || 'AbcJwtSecret_2026_Prod_AtLeast_32Chars' }}
       SPRING_PROFILES_ACTIVE: ${{ vars.SPRING_PROFILES_ACTIVE || 'prod' }}
     steps:
       - uses: actions/checkout@v4
@@ -122,10 +122,10 @@ jobs:
       - name: Prepare remote directories
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.DEPLOY_HOST || env.DEPLOY_HOST_DEBUG }}
-          username: ${{ secrets.DEPLOY_USER || env.DEPLOY_USER_DEBUG }}
+          host: ${{ secrets.DEPLOY_HOST || '8.163.10.211' }}
+          username: ${{ secrets.DEPLOY_USER || 'root' }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || env.DEPLOY_PORT_DEBUG }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
           timeout: 60s
           command_timeout: 5m
           envs: SERVICE_NAME,DEPLOY_ROOT,DEPLOY_DATA_ROOT
@@ -142,10 +142,10 @@ jobs:
       - name: Upload compose template
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.DEPLOY_HOST || env.DEPLOY_HOST_DEBUG }}
-          username: ${{ secrets.DEPLOY_USER || env.DEPLOY_USER_DEBUG }}
+          host: ${{ secrets.DEPLOY_HOST || '8.163.10.211' }}
+          username: ${{ secrets.DEPLOY_USER || 'root' }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || env.DEPLOY_PORT_DEBUG }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
           source: deploy/docker-compose.prod.yml
           target: ${{ env.DEPLOY_ROOT }}/${{ env.SERVICE_NAME }}/
           strip_components: 1
@@ -153,10 +153,10 @@ jobs:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.DEPLOY_HOST || env.DEPLOY_HOST_DEBUG }}
-          username: ${{ secrets.DEPLOY_USER || env.DEPLOY_USER_DEBUG }}
+          host: ${{ secrets.DEPLOY_HOST || '8.163.10.211' }}
+          username: ${{ secrets.DEPLOY_USER || 'root' }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || env.DEPLOY_PORT_DEBUG }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
           timeout: 300s
           command_timeout: 40m
           envs: GHCR_USER,GHCR_TOKEN,IMAGE,APP_VERSION,ABC_JWT_SECRET,SPRING_PROFILES_ACTIVE,SERVICE_NAME,DEPLOY_ROOT,DEPLOY_DATA_ROOT,MYSQL_ROOT_PASSWORD,MYSQL_APP_PASSWORD,REDIS_PASSWORD
