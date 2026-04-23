@@ -10,6 +10,8 @@
     </parent>
 
     <artifactId>abc-framework-web</artifactId>
+    <name>abc-framework-web</name>
+    <description>Web 基础设施：统一响应、全局异常、TraceId、CORS、Jackson 配置</description>
 
     <dependencies>
         <dependency>

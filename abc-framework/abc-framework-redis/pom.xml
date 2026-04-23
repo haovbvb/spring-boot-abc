@@ -10,6 +10,8 @@
     </parent>
 
     <artifactId>abc-framework-redis</artifactId>
+    <name>abc-framework-redis</name>
+    <description>缓存基础设施：RedisTemplate、Redisson、@RateLimit 注解式限流</description>
 
     <dependencies>
         <dependency>

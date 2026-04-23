@@ -10,6 +10,8 @@
     </parent>
 
     <artifactId>abc-framework-security</artifactId>
+    <name>abc-framework-security</name>
+    <description>安全基础设施：Spring Security 6 配置、JWT 签发与校验、鉴权异常处理</description>
 
     <dependencies>
         <dependency>

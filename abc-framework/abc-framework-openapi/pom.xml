@@ -10,6 +10,8 @@
     </parent>
 
     <artifactId>abc-framework-openapi</artifactId>
+    <name>abc-framework-openapi</name>
+    <description>接口文档基础设施：SpringDoc OpenAPI 3 集成</description>
 
     <dependencies>
         <dependency>

@@ -10,6 +10,8 @@
     </parent>
 
     <artifactId>abc-framework-mybatis</artifactId>
+    <name>abc-framework-mybatis</name>
+    <description>持久化基础设施：MyBatis-Plus、分页、乐观锁、BaseEntity 审计字段自动填充</description>
 
     <dependencies>
         <dependency>
